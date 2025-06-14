@@ -48,8 +48,7 @@ def create_video_from_pngs(png_dir, output_path, fps, audio_source=None):
             '-i', temp_video,
             '-i', audio_source,
             '-c:v', 'copy',  # Copy video stream
-            '-c:a', 'aac',   # Use AAC for audio
-            '-b:a', '160k',  # Audio bitrate
+            '-c:a', 'copy',  # Copy audio stream without re-encoding
             '-shortest',     # Match shortest stream duration
             output_path
         ]
