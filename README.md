@@ -9,6 +9,41 @@ Thanks to [SVFI team](https://github.com/Justin62628/Squirrel-RIFE) to support m
 
 [VapourSynth-RIFE](https://github.com/HolyWu/vs-rife) | [RIFE-ncnn-vulkan](https://github.com/nihui/rife-ncnn-vulkan) | [VapourSynth-RIFE-ncnn-Vulkan](https://github.com/styler00dollar/VapourSynth-RIFE-ncnn-Vulkan) | [vs-mlrt](https://github.com/AmusementClub/vs-mlrt) | [Drop frame fixer and FPS converter](https://github.com/may-son/RIFE-FixDropFrames-and-ConvertFPS)
 
+## Major Modifications (This Fork)
+
+This fork replaces OpenCV based (cv2) writing with FFMPEG for better control over video output and compression. This was achieved by modifying the original script to always output PNGs, and then use FFMPEG to create the video.
+
+### Key Changes
+
+- Replaced OpenCV VideoWriter with FFmpeg
+- The script now always creates PNG files in a vid_out/ directory. PNG files are numbered as 0000000.png, 0000001.png, etc.
+- Uses subprocess.run() instead of os.system() for better error handling
+
+**New Command Line Options**
+- `--png-only`: Generate only PNG sequence, skip video creation entirely
+- `--keep-pngs`: Preserve PNG files after video creation (default: clean up)
+- Removed old `--png` argument since PNG output is now always the intermediate step
+
+### Usage Examples
+
+```bash
+# Standard usage - creates high-quality MP4 with CRF 20
+python3 inference_video.py --multi=2 --video=input.mp4
+
+# Keep PNG files for inspection or further processing
+python3 inference_video.py --multi=2 --video=input.mp4 --keep-pngs
+
+# Generate only PNG sequence (no video creation)
+python3 inference_video.py --multi=2 --video=input.mp4 --png-only
+
+# Custom output path
+python3 inference_video.py --multi=2 --video=input.mp4 --output=my_video.mp4
+```
+
+The PNG sequence is always saved to `vid_out/` directory with frame numbering `0000000.png`, `0000001.png`, etc.
+
+---
+
 ## Frame Interpolation
 2024.08 - We find that 4.24+ is quite suitable for post-processing of [some diffusion model generated videos](https://drive.google.com/drive/folders/1hSzUn10Era3JCaVz0Z5Eg4wT9R6eJ9U9?usp=sharing).
 
