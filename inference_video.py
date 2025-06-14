@@ -10,48 +10,71 @@ import _thread
 import skvideo.io
 from queue import Queue, Empty
 from model.pytorch_msssim import ssim_matlab
+import shutil
+import subprocess
 
 warnings.filterwarnings("ignore")
 
-def transferAudio(sourceVideo, targetVideo):
-    import shutil
-    import moviepy.editor
-    tempAudioFileName = "./temp/audio.mkv"
-
-    # split audio from original video file and store in "temp" directory
-    if True:
-
-        # clear old "temp" directory if it exits
-        if os.path.isdir("temp"):
-            # remove temp directory
-            shutil.rmtree("temp")
-        # create new "temp" directory
-        os.makedirs("temp")
-        # extract audio from video
-        os.system('ffmpeg -y -i "{}" -c:a copy -vn {}'.format(sourceVideo, tempAudioFileName))
-
-    targetNoAudio = os.path.splitext(targetVideo)[0] + "_noaudio" + os.path.splitext(targetVideo)[1]
-    os.rename(targetVideo, targetNoAudio)
-    # combine audio file and new video file
-    os.system('ffmpeg -y -i "{}" -i {} -c copy "{}"'.format(targetNoAudio, tempAudioFileName, targetVideo))
-
-    if os.path.getsize(targetVideo) == 0: # if ffmpeg failed to merge the video and audio together try converting the audio to aac
-        tempAudioFileName = "./temp/audio.m4a"
-        os.system('ffmpeg -y -i "{}" -c:a aac -b:a 160k -vn {}'.format(sourceVideo, tempAudioFileName))
-        os.system('ffmpeg -y -i "{}" -i {} -c copy "{}"'.format(targetNoAudio, tempAudioFileName, targetVideo))
-        if (os.path.getsize(targetVideo) == 0): # if aac is not supported by selected format
-            os.rename(targetNoAudio, targetVideo)
-            print("Audio transfer failed. Interpolated video will have no audio")
+def create_video_from_pngs(png_dir, output_path, fps, audio_source=None):
+    """
+    Create MP4 video from PNG sequence using FFmpeg with custom settings
+    """
+    # Build FFmpeg command for PNG sequence to MP4
+    cmd = [
+        'ffmpeg', '-y',  # -y to overwrite output file
+        '-framerate', str(fps),
+        '-i', os.path.join(png_dir, '%07d.png'),
+        '-c:v', 'libx264',
+        '-crf', '20',
+        '-pix_fmt', 'yuv420p',
+        '-r', str(fps)  # Output framerate
+    ]
+    
+    # If audio source is provided, add audio stream
+    if audio_source:
+        temp_video = output_path.replace('.mp4', '_temp.mp4')
+        cmd.append(temp_video)
+        
+        # First create video without audio
+        print(f"Creating video from PNG sequence...")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"FFmpeg error: {result.stderr}")
+            return False
+            
+        # Then add audio
+        audio_cmd = [
+            'ffmpeg', '-y',
+            '-i', temp_video,
+            '-i', audio_source,
+            '-c:v', 'copy',  # Copy video stream
+            '-c:a', 'aac',   # Use AAC for audio
+            '-b:a', '160k',  # Audio bitrate
+            '-shortest',     # Match shortest stream duration
+            output_path
+        ]
+        
+        print(f"Adding audio to video...")
+        result = subprocess.run(audio_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"Audio merge failed: {result.stderr}")
+            # If audio merge fails, rename temp video as final output
+            os.rename(temp_video, output_path)
+            print("Video created without audio")
         else:
-            print("Lossless audio transfer failed. Audio was transcoded to AAC (M4A) instead.")
-
-            # remove audio-less video
-            os.remove(targetNoAudio)
+            # Remove temp video file
+            os.remove(temp_video)
+            print("Video created with audio")
     else:
-        os.remove(targetNoAudio)
-
-    # remove temp directory
-    shutil.rmtree("temp")
+        cmd.append(output_path)
+        print(f"Creating video from PNG sequence...")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"FFmpeg error: {result.stderr}")
+            return False
+        print("Video created successfully")
+    
+    return True
 
 parser = argparse.ArgumentParser(description='Interpolation for a pair of images')
 parser.add_argument('--video', dest='video', type=str, default=None)
@@ -64,8 +87,9 @@ parser.add_argument('--UHD', dest='UHD', action='store_true', help='support 4k v
 parser.add_argument('--scale', dest='scale', type=float, default=1.0, help='Try scale=0.5 for 4k video')
 parser.add_argument('--skip', dest='skip', action='store_true', help='whether to remove static frames before processing')
 parser.add_argument('--fps', dest='fps', type=int, default=None)
-parser.add_argument('--png', dest='png', action='store_true', help='whether to vid_out png format vid_outs')
-parser.add_argument('--ext', dest='ext', type=str, default='mp4', help='vid_out video extension')
+parser.add_argument('--keep-pngs', dest='keep_pngs', action='store_true', help='keep PNG files after creating video')
+parser.add_argument('--png-only', dest='png_only', action='store_true', help='only output PNG sequence, skip video creation')
+parser.add_argument('--ext', dest='ext', type=str, default='mp4', help='output video extension')
 parser.add_argument('--exp', dest='exp', type=int, default=1)
 parser.add_argument('--multi', dest='multi', type=int, default=2)
 
@@ -78,8 +102,6 @@ if args.skip:
 if args.UHD and args.scale==1.0:
     args.scale = 0.5
 assert args.scale in [0.25, 0.5, 1.0, 2.0, 4.0]
-if not args.img is None:
-    args.png = True
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_grad_enabled(False)
@@ -110,13 +132,12 @@ if not args.video is None:
         fpsNotAssigned = False
     videogen = skvideo.io.vreader(args.video)
     lastframe = next(videogen)
-    fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')
     video_path_wo_ext, ext = os.path.splitext(args.video)
     print('{}.{}, {} frames in total, {}FPS to {}FPS'.format(video_path_wo_ext, args.ext, tot_frame, fps, args.fps))
-    if args.png == False and fpsNotAssigned == True:
-        print("The audio will be merged after interpolation process")
+    if not args.png_only and fpsNotAssigned:
+        print("Audio will be merged after video creation")
     else:
-        print("Will not merge audio because using png or fps flag!")
+        print("Will not merge audio (PNG-only mode or custom FPS)")
 else:
     videogen = []
     for f in os.listdir(args.img):
@@ -126,18 +147,28 @@ else:
     videogen.sort(key= lambda x:int(x[:-4]))
     lastframe = cv2.imread(os.path.join(args.img, videogen[0]), cv2.IMREAD_UNCHANGED)[:, :, ::-1].copy()
     videogen = videogen[1:]
+
 h, w, _ = lastframe.shape
-vid_out_name = None
-vid_out = None
-if args.png:
-    if not os.path.exists('vid_out'):
-        os.mkdir('vid_out')
+
+# Always create PNG output directory
+png_output_dir = 'vid_out'
+if not os.path.exists(png_output_dir):
+    os.makedirs(png_output_dir)
 else:
+    # Clear existing PNG files
+    for f in os.listdir(png_output_dir):
+        if f.endswith('.png'):
+            os.remove(os.path.join(png_output_dir, f))
+
+# Determine final video output path
+if not args.png_only:
     if args.output is not None:
-        vid_out_name = args.output
+        final_video_path = args.output
     else:
-        vid_out_name = '{}_{}X_{}fps.{}'.format(video_path_wo_ext, args.multi, int(np.round(args.fps)), args.ext)
-    vid_out = cv2.VideoWriter(vid_out_name, fourcc, args.fps, (w, h))
+        if not args.video is None:
+            final_video_path = '{}_{}X_{}fps.{}'.format(video_path_wo_ext, args.multi, int(np.round(args.fps)), args.ext)
+        else:
+            final_video_path = 'interpolated_{}X_{}fps.{}'.format(args.multi, int(np.round(args.fps)), args.ext)
 
 def clear_write_buffer(user_args, write_buffer):
     cnt = 0
@@ -145,11 +176,9 @@ def clear_write_buffer(user_args, write_buffer):
         item = write_buffer.get()
         if item is None:
             break
-        if user_args.png:
-            cv2.imwrite('vid_out/{:0>7d}.png'.format(cnt), item[:, :, ::-1])
-            cnt += 1
-        else:
-            vid_out.write(item[:, :, ::-1])
+        # Always write PNG files
+        cv2.imwrite(os.path.join(png_output_dir, '{:0>7d}.png'.format(cnt)), item[:, :, ::-1])
+        cnt += 1
 
 def build_read_buffer(user_args, read_buffer, videogen):
     try:
@@ -240,15 +269,6 @@ while True:
         output = []
         for i in range(args.multi - 1):
             output.append(I0)
-        '''
-        output = []
-        step = 1 / args.multi
-        alpha = 0
-        for i in range(args.multi - 1):
-            alpha += step
-            beta = 1-alpha
-            output.append(torch.from_numpy(np.transpose((cv2.addWeighted(frame[:, :, ::-1], alpha, lastframe[:, :, ::-1], beta, 0)[:, :, ::-1].copy()), (2,0,1))).to(device, non_blocking=True).unsqueeze(0).float() / 255.)
-        '''
     else:
         output = make_inference(I0, I1, args.multi - 1)
 
@@ -277,14 +297,23 @@ import time
 while(not write_buffer.empty()):
     time.sleep(0.1)
 pbar.close()
-if not vid_out is None:
-    vid_out.release()
 
-# move audio to new video file if appropriate
-if args.png == False and fpsNotAssigned == True and not args.video is None:
-    try:
-        transferAudio(args.video, vid_out_name)
-    except:
-        print("Audio transfer failed. Interpolated video will have no audio")
-        targetNoAudio = os.path.splitext(vid_out_name)[0] + "_noaudio" + os.path.splitext(vid_out_name)[1]
-        os.rename(targetNoAudio, vid_out_name)
+print(f"PNG sequence saved to {png_output_dir}/")
+
+# Create video from PNG sequence using FFmpeg
+if not args.png_only:
+    audio_source = args.video if (not args.video is None and fpsNotAssigned) else None
+    success = create_video_from_pngs(png_output_dir, final_video_path, args.fps, audio_source)
+    
+    if success:
+        print(f"Video saved to {final_video_path}")
+        
+        # Clean up PNG files if not requested to keep them
+        if not args.keep_pngs:
+            print("Cleaning up PNG files...")
+            shutil.rmtree(png_output_dir)
+            print("PNG files removed")
+    else:
+        print("Video creation failed. PNG files preserved.")
+else:
+    print("PNG-only mode: Video creation skipped")
